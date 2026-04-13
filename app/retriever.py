@@ -174,7 +174,7 @@ def get_exact_phrase_documents(query: str, k: int = 12) -> List[Document]:
     if not matches:
         return []
 
-    ranked_matches = _apply_exact_match_boost(matches, query)
+    ranked_matches = rerank_documents(query, matches)
     return ranked_matches[:k]
 
 
@@ -196,30 +196,41 @@ def _rrf_merge(result_sets: Sequence[Sequence[Document]], k: int = 60) -> List[D
     return [doc_map[key] for key in ranked_keys]
 
 
-def _apply_exact_match_boost(docs: Iterable[Document], query: str) -> List[Document]:
+def rerank_documents(query: str, docs: Iterable[Document]) -> List[Document]:
     """
-    Move chunks with exact phrase/token matches to the front.
-    This helps identity questions without throwing away semantic recall.
+    Re-rank candidate chunks so the strongest answer-like evidence survives.
+    This is the explicit ranking stage before context limiting.
     """
     focus_tokens = _get_focus_tokens(query)
     focus_phrase = " ".join(focus_tokens)
     identity_query = _looks_like_identity_query(query)
+    normalized_query = query.lower().strip()
 
     boosted = []
     for doc in docs:
         content = doc.page_content.lower()
         content_tokens = set(_tokenize(content))
+        exact_query_match = 1 if normalized_query and normalized_query in content else 0
         all_focus_tokens = int(bool(focus_tokens) and all(token in content_tokens for token in focus_tokens))
         phrase_hits = 1 if focus_phrase and focus_phrase in content else 0
         token_hits = sum(token in content_tokens for token in focus_tokens)
         identity_hits = sum(cue in content for cue in IDENTITY_CUES) if identity_query else 0
         identity_evidence = _score_identity_evidence(content, focus_phrase) if identity_query else 0
         boosted.append(
-            (identity_evidence, all_focus_tokens, phrase_hits, identity_hits, token_hits, doc)
+            (
+                exact_query_match,
+                identity_evidence,
+                all_focus_tokens,
+                phrase_hits,
+                identity_hits,
+                token_hits,
+                len(doc.page_content),
+                doc,
+            )
         )
 
-    boosted.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]), reverse=True)
-    return [doc for _, _, _, _, _, doc in boosted]
+    boosted.sort(key=lambda item: item[:-1], reverse=True)
+    return [doc for *_, doc in boosted]
 
 
 def get_hybrid_documents(query: str, vector_k: int = 8, bm25_k: int = 8, final_k: int = 8) -> List[Document]:
@@ -230,7 +241,7 @@ def get_hybrid_documents(query: str, vector_k: int = 8, bm25_k: int = 8, final_k
     bm25_docs = get_bm25_documents(query, k=bm25_k)
 
     merged_docs = _rrf_merge([exact_phrase_docs, bm25_docs, vector_docs])
-    reranked_docs = _apply_exact_match_boost(merged_docs, query)
+    reranked_docs = rerank_documents(query, merged_docs)
     return reranked_docs[:final_k]
 
 
@@ -247,6 +258,11 @@ def format_context(docs: Sequence[Document]) -> str:
     return "\n" + ("\n" + ("-" * 50) + "\n").join(context_parts) if context_parts else ""
 
 
+def filter_low_quality_docs(docs: Sequence[Document], min_length: int = 100) -> List[Document]:
+    """Drop very short chunks that are unlikely to answer the question well."""
+    return [doc for doc in docs if len(doc.page_content.strip()) > min_length]
+
+
 def limit_context(docs: Sequence[Document], max_chars: int = 3000) -> List[Document]:
     """Limit total context size while keeping the best-ranked chunks first."""
     result = []
@@ -254,10 +270,12 @@ def limit_context(docs: Sequence[Document], max_chars: int = 3000) -> List[Docum
 
     for doc in docs:
         length = len(doc.page_content)
-        if total + length > max_chars:
+        if total + length > max_chars and result:
             break
         result.append(doc)
         total += length
+        if total >= max_chars:
+            break
 
     return result
 
@@ -267,10 +285,15 @@ def retrieve_documents(query: str, max_chars: int = 3000) -> List[Document]:
     docs = get_hybrid_documents(query)
     if DEBUG:
         print(f"\n[DEBUG] Hybrid retrieval returned {len(docs)} docs before context limiting")
-    return limit_context(docs, max_chars=max_chars)
+    filtered_docs = filter_low_quality_docs(docs)
+    if not filtered_docs and docs:
+        filtered_docs = [docs[0]]
+    if DEBUG:
+        print(f"\n[DEBUG] Filtered retrieval down to {len(filtered_docs)} docs after quality filtering")
+    return limit_context(filtered_docs, max_chars=max_chars)
 
 
-def retrieve_context(query: str, max_chars: int = 3000) -> str:
+def retrieve_context(query: str, max_chars: int = 3000) -> Tuple[str, List[Document]]:
     """End-to-end retrieval helper used by the RAG pipeline."""
     docs = retrieve_documents(query, max_chars=max_chars)
-    return format_context(docs)
+    return format_context(docs), docs

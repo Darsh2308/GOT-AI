@@ -1,8 +1,18 @@
-from app.rag_pipeline import ask_question, ask_question_with_sources
+from app.rag_pipeline import ask_question_with_sources
 
 
-def _print_sources(docs):
+def _print_sources(sources):
     print("\nSources:\n")
+    if not sources:
+        print("No grounded source citations were available.")
+        return
+
+    for i, source in enumerate(sources, start=1):
+        print(f"{i}. {source}")
+
+
+def _print_source_snippets(docs):
+    print("\nSupporting Snippets:\n")
     for i, doc in enumerate(docs, start=1):
         meta = doc.metadata
         snippet = " ".join(doc.page_content.split())[:220]
@@ -14,7 +24,8 @@ def _print_sources(docs):
 
 if __name__ == "__main__":
     print("[INFO] GOT-AI is ready. Type 'exit' to quit.")
-    print("[INFO] Use '/verify <question>' to see the answer with supporting sources.\n")
+    print("[INFO] Answers now include citations.")
+    print("[INFO] Use '/verify <question>' to inspect supporting snippets.\n")
 
     while True:
         query = input("Ask GOT-AI: ").strip()
@@ -33,10 +44,12 @@ if __name__ == "__main__":
                 print("Please enter a question after /verify.")
                 continue
 
-            answer, docs = ask_question_with_sources(user_query)
+            answer, sources, docs = ask_question_with_sources(user_query)
             print(f"\nAnswer:\n\n{answer}")
-            _print_sources(docs)
+            _print_sources(sources)
+            _print_source_snippets(docs)
             continue
 
-        answer = ask_question(query)
+        answer, sources, _ = ask_question_with_sources(query)
         print(f"\nAnswer:\n\n{answer}")
+        _print_sources(sources)
