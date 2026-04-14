@@ -1,7 +1,7 @@
 # GOT-AI: Complete Technical Documentation
 
-> A Retrieval-Augmented Generation (RAG) system for the Game of Thrones books.
-> Powered by Ollama (local LLM), ChromaDB (vector store), BM25 (lexical search), and LangChain.
+> An agentic RAG system for the Game of Thrones books.
+> Powered by Ollama (local LLM + tool-calling), ChromaDB (vector store), BM25 (lexical search), and LangChain.
 
 ---
 
@@ -18,9 +18,10 @@
    - [prompt.py](#36-promptpy)
    - [retriever.py](#37-retrieverpy)
    - [rag_pipeline.py](#38-rag_pipelinepy)
-   - [main.py](#39-mainpy)
-   - [ui.py](#310-uipy)
-   - [utils.py](#311-utilspy)
+   - [agent.py](#39-agentpy)
+   - [main.py](#310-mainpy)
+   - [ui.py](#311-uipy)
+   - [utils.py](#312-utilspy)
 4. [LLM & Model Details](#4-llm--model-details)
 5. [LangChain](#5-langchain)
 6. [LangGraph](#6-langgraph)
@@ -31,38 +32,36 @@
 
 ## 1. Basic Pipeline Overview
 
+### Agentic Mode (default)
+
 ```
  User Types a Question
          |
          v
-  [ RETRIEVER ]
-  ┌──────────────────────────────────────────────────────────┐
-  │  1. Exact Phrase Match (keyword hit on indexed chunks)   │
-  │  2. BM25 Lexical Search (TF-IDF-style keyword ranking)  │
-  │  3. Semantic Vector Search (embedding similarity)        │
-  │         |                                                 │
-  │  [ RRF Merge ] ← Fuses all 3 result sets                │
-  │         |                                                 │
-  │  [ Re-Rank ] ← Scores by identity cues, token hits etc. │
-  │         |                                                 │
-  │  [ Filter + Limit Context ] ← Quality filter, 3000 chars │
-  └──────────────────────────────────────────────────────────┘
+  [ AGENT — ChatOllama with tool-calling ]
          |
-         v  (Top 8 document chunks with page metadata)
-  [ PROMPT BUILDER ]
-  Wraps context + question into a strict GOT-AI prompt
-         |
-         v
-  [ LLM - llama3 via Ollama ]
-  Generates grounded answer from context only
-         |
-         v
-  [ RESPONSE CLEANER ]
-  Tidies formatting artifacts
-         |
-         v
-  [ OUTPUT ]
-  Answer + Source Citations (file + page number)
+         ├─ Casual / off-topic query?
+         │       └─► Answer directly from LLM knowledge
+         │           (no retrieval, no latency)
+         │
+         └─ Game of Thrones question?
+                 └─► call search_books(query)
+                         |
+                         v
+                  [ HYBRID RETRIEVER ]
+                  ┌──────────────────────────────────────────────┐
+                  │  1. Exact Phrase Match                       │
+                  │  2. BM25 Lexical Search                      │
+                  │  3. Semantic Vector Search (ChromaDB)         │
+                  │         |                                     │
+                  │  [ RRF Fusion ] → [ Re-Rank ] → [ Limit ]    │
+                  └──────────────────────────────────────────────┘
+                         |
+                         v  (top passages + page citations)
+                  [ AGENT synthesises final answer ]
+                         |
+                         v
+                  Answer + Sources + "Retrieved from books" badge
 ```
 
 ### The Two Phases
@@ -75,7 +74,7 @@ PDF Books → Load Pages → Clean Text → Split into Chunks
 
 **Phase 2 — Query (run every question)**
 ```
-Question → Hybrid Retrieve → Build Prompt → LLM → Clean → Return
+Question → Agent decides → [optional] search_books → synthesise → Return
 ```
 
 ---
@@ -87,16 +86,17 @@ GOT-AI/
 ├── .env                      ← API keys, LangSmith config
 ├── requirements.txt          ← All Python dependencies
 ├── app/
+│   ├── agent.py              ← Agentic loop: ChatOllama + search_books tool
 │   ├── config.py             ← Central config (models, paths, flags)
 │   ├── cleaners.py           ← Text normalization utilities
 │   ├── ingestion.py          ← PDF loading, chunking pipeline
 │   ├── vector_store.py       ← ChromaDB create/load
-│   ├── llm.py                ← Ollama LLM singleton
-│   ├── prompt.py             ← Prompt template builder
+│   ├── llm.py                ← OllamaLLM + ChatOllama singletons
+│   ├── prompt.py             ← Agent system prompt + legacy RAG prompt
 │   ├── retriever.py          ← FULL hybrid retrieval engine
-│   ├── rag_pipeline.py       ← Orchestrator: retrieval → LLM → output
-│   ├── main.py               ← CLI interface
-│   ├── ui.py                 ← Streamlit web UI
+│   ├── rag_pipeline.py       ← run_rag_tool() + legacy standalone pipeline
+│   ├── main.py               ← CLI interface (uses agent)
+│   ├── ui.py                 ← Streamlit web UI (uses agent, shows badge)
 │   └── utils.py              ← Test helpers for LLM + embeddings
 ├── data/
 │   └── books/                ← Put your GOT PDF books here

@@ -26,6 +26,25 @@ RAG System:
 
 User Query → Embedding → Vector Search → Retrieve Top-K Chunks → Prompt Augmentation → LLM → Response
 
+### Agentic RAG (current architecture)
+
+The system was evolved beyond static RAG. An LLM router decides whether
+retrieval is needed at all:
+
+```
+User Query
+    │
+    ▼
+[Router LLM] — "Does this need book retrieval?"
+    │
+    ├─ NO  → LLM answers directly  (greetings, general knowledge)
+    │
+    └─ YES → Hybrid RAG retrieval → context → LLM synthesises answer
+```
+
+This eliminates unnecessary retrieval latency for casual queries while
+keeping full grounding for any Game of Thrones question.
+
 ---
 
 # 0.2 WHY RAG OVER FINE-TUNING
@@ -266,15 +285,18 @@ Use cases:
 * Tool usage
 * Complex workflows
 
-Why NOT using now:
+Current status:
 
-* Overkill for simple RAG
-* Adds complexity
+Not used. The agentic behaviour (router → optional RAG → synthesis) is
+implemented as a simple Python function in `agent.py` without LangGraph.
+This is intentional: LangGraph adds non-trivial complexity for a two-step
+pipeline that a plain if/else handles cleanly.
 
-When to use later:
+When to add LangGraph:
 
-* Multi-step reasoning
-* Tool calling agents
+* Conversation memory across turns
+* Multi-hop reasoning ("find character X, then find their relationship to Y")
+* Parallel tool calls
 
 ---
 
@@ -318,29 +340,58 @@ Good prompt should:
 * Avoid hallucination
 * Be structured
 
-Example pattern:
-
+Example pattern (legacy strict RAG):
 "Answer ONLY using the provided context. If not found, say 'I don't know'."
+
+### Agentic Prompt Architecture (current)
+
+Three distinct prompts are now in use:
+
+1. **Router prompt** (`_ROUTER_SYSTEM` in `agent.py`)
+   Asks the LLM: "Does this query need book retrieval? Reply YES or NO."
+   No extra text allowed — prevents prompt injection.
+
+2. **Agent system prompt** (`AGENT_SYSTEM_PROMPT` in `prompt.py`)
+   Gives the LLM its identity and explains when to search vs. answer directly.
+   Used as the system message on every agent call.
+
+3. **RAG synthesis prompt** (`build_rag_prompt()` in `prompt.py`)
+   The strict "answer primarily from context" prompt, used only when
+   retrieved passages are available. Keeps the grounding guarantee.
 
 ---
 
 # 0.9 SYSTEM DESIGN DECISIONS (FINALIZED)
 
-LLM: llama3 via Ollama
+LLM: llama3 via Ollama (ChatOllama for the agent, OllamaLLM for legacy path)
 Embeddings: nomic-embed-text
 Framework: LangChain
 Observability: LangSmith
 Vector DB: Chroma
+Agent Strategy: Prompt-based router (no native tool-calling required — works with any Ollama model)
 
 ---
 
 # 0.10 FINAL ARCHITECTURE
 
+**Ingestion (one-time):**
 PDF → Loader → Chunking → Embeddings → Chroma DB
-↓
-User Query → Embedding → Retriever → Context
-↓
-LLM (llama3) → Answer
+
+**Query (every request):**
+```
+User Query
+    │
+    ▼
+Router LLM  →  NO  →  Direct LLM answer
+    │
+   YES
+    │
+    ▼
+Hybrid Retriever  (Exact + BM25 + Vector → RRF → Re-rank → Limit)
+    │
+    ▼
+RAG Synthesis Prompt  →  LLM (llama3)  →  Grounded Answer + Sources
+```
 
 ---
 
