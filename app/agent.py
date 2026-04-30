@@ -33,7 +33,7 @@ Response shape
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Generator, List, Tuple
 
 from langchain_core.documents import Document
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -155,6 +155,46 @@ def run_agent(query: str) -> Dict[str, Any]:
         "used_rag": True,
         "docs": docs,
     }
+
+
+# ---------------------------------------------------------------------------
+# Streaming variant
+# ---------------------------------------------------------------------------
+
+def stream_agent(query: str) -> Generator[str, None, None]:
+    """
+    Stream the final answer token-by-token for the UI.
+
+    Yields a metadata dict first (sources, used_rag, docs), then yields
+    str tokens for the answer. The UI must consume the first item separately.
+    """
+    llm = _get_chat_model()
+    use_rag = _should_use_rag(query)
+
+    if not use_rag:
+        messages = [
+            SystemMessage(content=AGENT_SYSTEM_PROMPT),
+            HumanMessage(content=query),
+        ]
+        yield {"used_rag": False, "sources": [], "docs": []}
+        for chunk in llm.stream(messages):
+            token = chunk.content
+            if token:
+                yield token
+        return
+
+    rag_context, docs = run_rag_tool(query)
+    sources = format_sources(docs)
+    synthesis_prompt = build_rag_prompt(rag_context, query)
+    messages = [
+        SystemMessage(content=AGENT_SYSTEM_PROMPT),
+        HumanMessage(content=synthesis_prompt),
+    ]
+    yield {"used_rag": True, "sources": sources, "docs": docs}
+    for chunk in llm.stream(messages):
+        token = chunk.content
+        if token:
+            yield token
 
 
 # ---------------------------------------------------------------------------

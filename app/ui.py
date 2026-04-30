@@ -13,7 +13,7 @@ Run:
 
 import streamlit as st
 
-from app.agent import ask_full
+from app.agent import ask_full, stream_agent
 
 # ---------------------------------------------------------------------------
 # Page config
@@ -32,6 +32,9 @@ st.caption(
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "query_cache" not in st.session_state:
+    st.session_state.query_cache = {}
 
 # ---------------------------------------------------------------------------
 # Render prior messages
@@ -67,14 +70,30 @@ if query:
         st.markdown(query)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            result = ask_full(query)
+        # Serve from session cache for identical repeated queries
+        if query in st.session_state.query_cache:
+            cached = st.session_state.query_cache[query]
+            answer = cached["answer"]
+            sources = cached["sources"]
+            used_rag = cached["used_rag"]
+            st.markdown(answer)
+        else:
+            gen = stream_agent(query)
 
-        answer = result["answer"]
-        sources = result["sources"]
-        used_rag = result["used_rag"]
+            # First item is always the metadata dict
+            meta = next(gen)
+            used_rag = meta["used_rag"]
+            sources = meta["sources"]
 
-        st.markdown(answer)
+            # Stream tokens into the UI
+            answer = st.write_stream(gen)
+            answer = answer or ""
+
+            st.session_state.query_cache[query] = {
+                "answer": answer,
+                "sources": sources,
+                "used_rag": used_rag,
+            }
 
         if used_rag:
             st.caption("Retrieved from books")

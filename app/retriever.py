@@ -1,4 +1,5 @@
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from functools import lru_cache
 from typing import Iterable, List, Sequence, Tuple
 
@@ -56,6 +57,7 @@ def _tokenize(text: str) -> List[str]:
     return re.findall(r"[a-z0-9']+", text.lower())
 
 
+@lru_cache(maxsize=256)
 def _get_focus_tokens(query: str) -> List[str]:
     """Drop question filler words so retrieval anchors on the actual subject."""
     tokens = _tokenize(query)
@@ -236,9 +238,18 @@ def rerank_documents(query: str, docs: Iterable[Document]) -> List[Document]:
 def get_hybrid_documents(query: str, vector_k: int = 8, bm25_k: int = 8, final_k: int = 8) -> List[Document]:
     """Hybrid retrieval: lexical BM25 + semantic vector search + exact-match boost."""
     semantic_query = " ".join(_get_focus_tokens(query))
-    exact_phrase_docs = get_exact_phrase_documents(query)
-    vector_docs = get_vector_retriever().invoke(semantic_query or query)[:vector_k]
-    bm25_docs = get_bm25_documents(query, k=bm25_k)
+
+    def _exact(): return get_exact_phrase_documents(query)
+    def _vector(): return get_vector_retriever().invoke(semantic_query or query)[:vector_k]
+    def _bm25(): return get_bm25_documents(query, k=bm25_k)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fut_exact = pool.submit(_exact)
+        fut_vector = pool.submit(_vector)
+        fut_bm25 = pool.submit(_bm25)
+        exact_phrase_docs = fut_exact.result()
+        vector_docs = fut_vector.result()
+        bm25_docs = fut_bm25.result()
 
     merged_docs = _rrf_merge([exact_phrase_docs, bm25_docs, vector_docs])
     reranked_docs = rerank_documents(query, merged_docs)

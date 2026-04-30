@@ -79,7 +79,7 @@ def format_sources(docs: Sequence) -> List[str]:
 # RAG tool — called by the agent
 # ---------------------------------------------------------------------------
 
-def run_rag_tool(query: str, max_chars: int = 3000) -> Tuple[str, List]:
+def run_rag_tool(query: str, max_chars: int = 1500) -> Tuple[str, List]:
     """
     Retrieve context for *query* and return the formatted context string and
     the raw Document list.  The agent uses the context to craft its final
